@@ -413,6 +413,30 @@
     avgCount.textContent = reviews.length + "개의 평가 기준";
   }
 
+  // 별 호버 사운드
+  var hoverSound = new Audio("terrakion.mp3");
+  hoverSound.preload = "auto";
+  // 브라우저 자동재생 정책상 hover는 사용자 제스처로 인정되지 않는다.
+  // 첫 클릭/키/터치 때 오디오를 한 번 재생-정지해 잠금 해제해두면 이후 hover 재생이 허용된다.
+  var audioUnlocked = false;
+  function unlockAudio(){
+    if(audioUnlocked) return;
+    audioUnlocked = true;
+    hoverSound.play().then(function(){
+      hoverSound.pause();
+      hoverSound.currentTime = 0;
+    }).catch(function(){ audioUnlocked = false; });
+  }
+  ["pointerdown","keydown","touchstart"].forEach(function(ev){
+    document.addEventListener(ev, unlockAudio);
+  });
+  function playHoverSound(){
+    try{
+      hoverSound.currentTime = 0;
+      hoverSound.play();
+    }catch(e){}
+  }
+
   // 클릭형 별 생성
   (function buildStars(){
     for(var i=1;i<=5;i++){
@@ -422,7 +446,7 @@
         b.className = "star-btn";
         b.setAttribute("role","radio");
         b.setAttribute("aria-label", v + "점");
-        b.addEventListener("mouseenter", function(){ paint(v); });
+        b.addEventListener("mouseenter", function(){ playHoverSound(); paint(v); });
         b.addEventListener("focus", function(){ paint(v); });
         b.addEventListener("click", function(){
           selected = v;
