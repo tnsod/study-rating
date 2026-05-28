@@ -326,14 +326,20 @@
     <div class="review-list" id="reviewList"></div>
   </main>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (function(){
   "use strict";
-  var STORAGE_KEY = "study_rating_reviews_v1";
+  var SUPABASE_URL      = "https://oftomidlunefbfjmzvaf.supabase.co";
+  var SUPABASE_ANON_KEY = "sb_publishable_pKJiEvvZAIbKzE8-4-k8Dg_BtFfgYgX";
+  var sb = (window.supabase && SUPABASE_URL.indexOf("http") === 0)
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
 
-  var reviews = load();
+  var reviews = [];
   var selected = 0;
   var reviewsOpen = false;
+  var loadError = false;
 
   var avgNum   = document.getElementById("avgNum");
   var avgFill  = document.getElementById("avgFill");
@@ -347,12 +353,31 @@
   var toggle   = document.getElementById("reviewsToggle");
   var listEl   = document.getElementById("reviewList");
 
-  function load(){
-    try{ var v = JSON.parse(localStorage.getItem(STORAGE_KEY)); return Array.isArray(v) ? v : []; }
-    catch(e){ return []; }
+  // Supabase에서 created_at 내림차순으로 리뷰 불러오기
+  function refresh(){
+    if(!sb){ loadError = true; renderAll(); return Promise.resolve(); }
+    return sb.from("reviews")
+      .select("id,name,rating,text,created_at")
+      .order("created_at", { ascending:false })
+      .then(function(res){
+        if(res.error){ loadError = true; console.error("[reviews] load error:", res.error); }
+        else { loadError = false; reviews = res.data || []; }
+        renderAll();
+      });
   }
-  function persist(){
-    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(reviews)); }catch(e){}
+
+  // 새 행을 배열에 합치기 (id 중복 방지 → realtime + insert 중복 차단)
+  function upsertRow(row){
+    if(!row) return;
+    for(var i=0;i<reviews.length;i++){ if(reviews[i].id === row.id) return; }
+    reviews.push(row);
+    reviews.sort(function(a,b){ return new Date(b.created_at) - new Date(a.created_at); });
+    renderAll();
+  }
+
+  function renderAll(){
+    renderAvg();
+    if(reviewsOpen) renderReviews(); else updateToggleLabel();
   }
 
   function esc(s){
@@ -364,12 +389,15 @@
   function computeAvg(){
     if(!reviews.length) return 0;
     var sum = 0;
-    for(var i=0;i<reviews.length;i++) sum += reviews[i].score;
+    for(var i=0;i<reviews.length;i++) sum += Number(reviews[i].rating) || 0;
     return sum / reviews.length;
   }
 
-  function timeAgo(ts){
-    var d = Date.now() - ts;
+  function timeAgo(created_at){
+    var t = new Date(created_at).getTime();
+    if(isNaN(t)) return "";
+    var d = Date.now() - t;
+    if(d < 0) d = 0;
     var m = 60000, h = 3600000, day = 86400000;
     if(d < m) return "방금 전";
     if(d < h) return Math.floor(d/m) + "분 전";
@@ -442,9 +470,9 @@
         html += '<div class="review">'
           + '<div class="review-head">'
           +   '<span class="review-name">' + esc(r.name) + '</span>'
-          +   '<span class="review-time">' + timeAgo(r.ts) + '</span>'
+          +   '<span class="review-time">' + timeAgo(r.created_at) + '</span>'
           + '</div>'
-          + '<div class="review-stars">' + staticStars(r.score) + '</div>'
+          + '<div class="review-stars">' + staticStars(r.rating) + '</div>'
           + (r.text ? '<div class="review-text">' + esc(r.text) + '</div>' : '')
           + '</div>';
       }
@@ -455,7 +483,7 @@
 
   function updateToggleLabel(){
     if(!reviews.length){
-      toggle.textContent = "아직 리뷰가 없어요";
+      toggle.textContent = loadError ? "리뷰를 불러오지 못했어요" : "아직 리뷰가 없어요";
       toggle.disabled = true;
       reviewsOpen = false;
       listEl.classList.remove("open");
@@ -473,34 +501,59 @@
     updateToggleLabel();
   });
 
+  var submitBtn = form.querySelector(".submit");
+
   form.addEventListener("submit", function(e){
     e.preventDefault();
     if(!selected){ hint.textContent = "별을 먼저 선택해주세요"; return; }
     var text = textIn.value.trim();
     if(!text){ hint.textContent = "한 줄 평가를 입력해주세요"; return; }
+    if(!sb){ hint.textContent = "서버 연결이 설정되지 않았어요"; return; }
     var name = nameIn.value.trim() || "익명";
 
-    reviews.unshift({ name:name, score:selected, text:text, ts:Date.now() });
-    persist();
+    submitBtn.disabled = true;
+    hint.textContent = "등록 중...";
 
-    // 초기화
-    form.reset();
-    selected = 0;
-    paint(0);
-    updateMyRating();
-    hint.textContent = "";
-
-    renderAvg();
-    if(reviewsOpen) renderReviews();
-    updateToggleLabel();
+    sb.from("reviews")
+      .insert({ name:name, rating:selected, text:text })
+      .select()
+      .then(function(res){
+        if(res.error){ throw res.error; }
+        form.reset();
+        selected = 0;
+        paint(0);
+        updateMyRating();
+        hint.textContent = "";
+        if(res.data && res.data[0]) upsertRow(res.data[0]);
+        else refresh();
+      })
+      .catch(function(err){
+        console.error("[reviews] insert error:", err);
+        hint.textContent = "등록에 실패했어요. 잠시 후 다시 시도해주세요";
+      })
+      .then(function(){ submitBtn.disabled = false; });
   });
 
   // 상대 시간 자동 갱신
   setInterval(function(){ if(reviewsOpen) renderReviews(); }, 60000);
 
-  // 초기 렌더
+  // Realtime 구독: 다른 사람이 등록한 리뷰도 자동 반영 (실패해도 무시)
+  function subscribeRealtime(){
+    if(!sb) return;
+    try{
+      sb.channel("public:reviews")
+        .on("postgres_changes", { event:"INSERT", schema:"public", table:"reviews" }, function(payload){
+          upsertRow(payload.new);
+        })
+        .subscribe();
+    }catch(e){ console.warn("[reviews] realtime unavailable:", e); }
+  }
+
+  // 초기 렌더 + 로드 + 구독
   renderAvg();
   updateToggleLabel();
+  refresh();
+  subscribeRealtime();
 })();
 </script>
 </body>
